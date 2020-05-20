@@ -51,30 +51,41 @@ SCHEME = """<scheme>
     </endpoint>
 </scheme>
 """
-def iterate_json_data(block, data_json, blob_name):
-    for region, region_data in data_json[block].items():
-        splunk_row={}
-        splunk_row['type'] = block
-        splunk_row['region'] = region
-        splunk_row['date'] = data_json['lastUpdatedAt']
-        print ("region={}".format(region))
 
-        for detail, detail_data in region_data.items():
-            print("detail={}".format(detail))
-            splunk_row['detail'] = detail
-            if not isinstance(detail_data, list):
-                print("value={}".format(detail_data['value']))
-                splunk_row[detail] = detail_data['value']
-                print_xml_stream(json.dumps(splunk_row,ensure_ascii=False),blob_name)
-                del splunk_row[detail]
+def iterate_json_data(block, data_json):
+    for region, region_data in data_json.items():
+        if region != 'metadata':
+            splunk_row={}
+            splunk_row['type'] = block
+            splunk_row['region'] = region
+            if 'lastUpdatedAt' in data_json:
+                splunk_row['date'] = data_json['lastUpdatedAt']
+            elif 'metadata' in data_json and 'lastUpdatedAt' in data_json['metadata']:
+                splunk_row['date'] = data_json['metadata']['lastUpdatedAt']
+
+#            print ("region={}".format(region))
+            if isinstance(region_data, int):
+                splunk_row['value'] = region_data
+                print_xml_stream(json.dumps(splunk_row,ensure_ascii=False),block)
             else:
-                for dailydate in detail_data:
-                    #print("DailyDate={}".format(dailydate))
-                    splunk_row[detail] = dailydate['value']
-                    splunk_row['date'] = dailydate['date'] + " 01:00:00.000"
-                    pprint(splunk_row)
-                    print_xml_stream(json.dumps(splunk_row,ensure_ascii=False),blob_name)
-                    del splunk_row[detail]
+                for detail, detail_data in region_data.items():
+    #                print("detail={}".format(detail))
+                    splunk_row['detail'] = detail
+                    if not isinstance(detail_data, list):
+    #                    print("value={}".format(detail_data['value']))
+                        splunk_row[detail] = detail_data['value']
+                        print_xml_stream(json.dumps(splunk_row,ensure_ascii=False),block)
+                        del splunk_row[detail]
+                    else:
+                        for dailydate in detail_data:
+                            #print("DailyDate={}".format(dailydate))
+                            splunk_row[detail] = dailydate['value']
+                            if 'date' in dailydate:
+                                splunk_row['date'] = dailydate['date'] + " 01:00:00.000"
+
+                            pprint(splunk_row)
+                            print_xml_stream(json.dumps(splunk_row,ensure_ascii=False),block)
+                            del splunk_row[detail]
 
 def do_run():
 
@@ -102,26 +113,20 @@ def do_run():
         if proxies:
             req_args["proxies"] = proxies
 
-        req = requests.get(url="https://publicdashacc.blob.core.windows.net/publicdata?restype=container&comp=list&prefix=data", params=req_args)
-        xmldom = etree.fromstring(req.content)
+        #Population data
+        data_url = "https://c19pub.azureedge.net/assets/population/population.json"
+        print("Processing file={}".format(data_url))
+        data_req = requests.get(url=data_url, params=req_args)
+        data_json = data_req.json()
+        iterate_json_data("population", data_json)
 
-        blobs = xmldom.xpath('/EnumerationResults/Blobs/Blob')
-        for blob in blobs:
-            blob_etag = blob.xpath('Properties/Etag')[0].text
-            blob_name = blob.xpath('Name')[0].text
-            logging.info("Found file=%s etag=%s" % (blob_name,blob_etag))
-            blob_url = "https://publicdashacc.blob.core.windows.net/publicdata/%s" % (blob_name)
-            if not load_checkpoint(config, blob_etag):
-                print("Processing file={}".format(blob_url))
-                data_req = requests.get(url=blob_url, params=req_args)
-                data_json = data_req.json()
-
-                iterate_json_data("overview", data_json, blob_name)
-                iterate_json_data("countries", data_json, blob_name)
-                iterate_json_data("regions", data_json, blob_name)
-                iterate_json_data("utlas", data_json, blob_name)
-            logging.info("Marking file={} etag={} as processed".format(blob_name,blob_etag))
-            save_checkpoint(config, blob_etag)
+        # Test data
+        json_files = ["utlas", "overview", "regions", "countries"]
+        for json_file in json_files:
+            data_url = "https://c19downloads.azureedge.net/downloads/data/{}_latest.json".format(json_file)
+            data_req = requests.get(url=data_url, params=req_args)
+            data_json = data_req.json()
+            iterate_json_data(json_file, data_json)
 
     except RuntimeError, e:
         logging.error("Looks like an error: %s" % str(e))
@@ -148,3 +153,4 @@ if __name__ == '__main__':
         do_run()
 
     sys.exit(0)
+
